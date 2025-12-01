@@ -1,0 +1,91 @@
+name: Deploy to GCP Cloud Run
+
+on:
+    push:
+        branches:
+            - main
+
+env:
+    PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+    REGION: us-central1
+    PUBSUB_TOPIC: log-processing
+
+jobs:
+    deploy:
+        name: Build and Deploy
+        runs-on: ubuntu-latest
+
+        permissions:
+            contents: read
+            id-token: write
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Google Auth (Workload Identity)
+              id: auth
+              uses: google-github-actions/auth@v2
+              with:
+                  workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+                  service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+            - name: Set up Cloud SDK
+              uses: google-github-actions/setup-gcloud@v2
+              with:
+                  project_id: ${{ env.PROJECT_ID }}
+
+            - name: Deploy Ingestion Service
+              working-directory: ./ingestion-service
+              run: |
+                  gcloud run deploy ingestion-service \
+                    --source . \
+                    --platform managed \
+                    --region ${{ env.REGION }} \
+                    --allow-unauthenticated \
+                    --timeout 60 \
+                    --memory 256Mi \
+                    --min-instances 0 \
+                    --max-instances 100 \
+                    --set-env-vars "PUBSUB_TOPIC=${{ env.PUBSUB_TOPIC }}"
+
+            - name: Deploy Worker Service
+              working-directory: ./worker-service
+              run: |
+                  gcloud run deploy worker-service \
+                    --source . \
+                    --platform managed \
+                    --region ${{ env.REGION }} \
+                    --allow-unauthenticated \
+                    --timeout 600 \
+                    --memory 512Mi \
+                    --min-instances 0 \
+                    --max-instances 10
+
+            - name: Get Service URLs
+              run: |
+                  INGESTION_URL=$(gcloud run services describe ingestion-service \
+                    --region ${{ env.REGION }} --format 'value(status.url)')
+                  WORKER_URL=$(gcloud run services describe worker-service \
+                    --region ${{ env.REGION }} --format 'value(status.url)')
+
+                  echo "## 🚀 Deployment Complete!" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "**Ingestion API:** $INGESTION_URL/ingest" >> $GITHUB_STEP_SUMMARY
+                  echo "**Worker Service:** $WORKER_URL" >> $GITHUB_STEP_SUMMARY
+
+            - name: Smoke Test
+              run: |
+                  API_URL=$(gcloud run services describe ingestion-service \
+                    --region ${{ env.REGION }} --format 'value(status.url)')
+
+                  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API_URL/ingest" \
+                    -H "Content-Type: application/json" \
+                    -d '{"tenant_id":"ci_test","log_id":"ci_${{ github.run_id }}","text":"CI test"}')
+
+                  if [ "$HTTP_CODE" = "202" ]; then
+                    echo "✅ Smoke test passed!" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "❌ Smoke test failed (HTTP $HTTP_CODE)" >> $GITHUB_STEP_SUMMARY
+                    exit 1
+                  fi
