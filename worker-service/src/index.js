@@ -88,7 +88,8 @@ const storeProcessedLog = async (data) => {
         status: 'completed'
     };
 
-    await docRef.set(document);
+    // Use create() instead of set() - fails if document already exists
+    await docRef.create(document);
 
     // Also update tenant document metadata
     const tenantRef = firestore.collection('tenants').doc(data.tenant_id);
@@ -131,7 +132,7 @@ app.post('/process', async (req, res) => {
                 event: 'duplicate_skipped',
                 log_id: message.log_id
             }));
-            return res.status(200).json({ status: 'skipped', reason: 'duplicate' });
+            return res.status(409).json({ status: 'skipped', reason: 'duplicate' });
         }
 
         // Simulate heavy processing
@@ -141,31 +142,44 @@ app.post('/process', async (req, res) => {
         const redactedText = redactPII(message.text);
 
         // Store to Firestore: tenants/{tenant_id}/processed_logs/{log_id}
-        const storedDoc = await storeProcessedLog({
-            tenant_id: message.tenant_id,
-            log_id: message.log_id,
-            source: message.source,
-            original_text: message.text,
-            modified_data: redactedText,
-            text_length: message.text.length,
-            processing_time: processingTime,
-            received_at: message.received_at
-        });
+        try {
+            const storedDoc = await storeProcessedLog({
+                tenant_id: message.tenant_id,
+                log_id: message.log_id,
+                source: message.source,
+                original_text: message.text,
+                modified_data: redactedText,
+                text_length: message.text.length,
+                processing_time: processingTime,
+                received_at: message.received_at
+            });
 
-        console.log(JSON.stringify({
-            event: 'processing_complete',
-            tenant_id: message.tenant_id,
-            log_id: message.log_id,
-            path: `tenants/${message.tenant_id}/processed_logs/${message.log_id}`,
-            total_time_ms: Date.now() - startTime
-        }));
+            console.log(JSON.stringify({
+                event: 'processing_complete',
+                tenant_id: message.tenant_id,
+                log_id: message.log_id,
+                path: `tenants/${message.tenant_id}/processed_logs/${message.log_id}`,
+                total_time_ms: Date.now() - startTime
+            }));
 
-        // Acknowledge the message (200 = success)
-        return res.status(200).json({
-            status: 'processed',
-            log_id: message.log_id,
-            path: `tenants/${message.tenant_id}/processed_logs/${message.log_id}`
-        });
+            // Acknowledge the message (202 = created)
+            return res.status(202).json({
+                status: 'processed',
+                log_id: message.log_id,
+                path: `tenants/${message.tenant_id}/processed_logs/${message.log_id}`
+            });
+
+        } catch (storeError) {
+            // If document already exists, create() throws an error - treat as success
+            if (storeError.code === 6) { // ALREADY_EXISTS error code
+                console.log(JSON.stringify({
+                    event: 'duplicate_detected_on_write',
+                    log_id: message.log_id
+                }));
+                return res.status(409).json({ status: 'skipped', reason: 'duplicate' });
+            }
+            throw storeError; // Re-throw other errors
+        }
 
     } catch (error) {
         console.error(JSON.stringify({
