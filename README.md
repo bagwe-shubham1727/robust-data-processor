@@ -95,6 +95,9 @@ When inspected in Firebase Console:
 - Each tenant's logs are in isolated subcollections
 - No cross-tenant data access possible
 
+## Load Testing Results
+![alt text](Load_Test_Results.png)
+
 ## Tech Stack
 
 | Component | GCP Service |
