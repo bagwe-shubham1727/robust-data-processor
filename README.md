@@ -62,6 +62,8 @@ A scalable, multi-tenant, event-driven API backend for ingesting and processing 
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+![alt text](Log_Processing_Pipeline_Architecture.png)
+
 ## Project Structure
 
 ```
